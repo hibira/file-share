@@ -117,7 +117,7 @@ Resources:
       AlarmDescription: AWS-AIDevOps beta test - EC2 CPU utilization alarm
       MetricName: CPUUtilization
       Namespace: AWS/EC2
-      Statistic: Average
+      Statistic: Maximum
       Period: 60
       EvaluationPeriods: 1
       Threshold: 70
