@@ -38,6 +38,34 @@ Resources:
         - Key: Purpose
           Value: AWS-AIDevOps-Testing
 
+  # IAM Role for EC2 to send logs to CloudWatch
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AWS-AIDevOps-EC2-CloudWatch-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: AWS-AIDevOps-EC2-Role
+        - Key: Purpose
+          Value: AWS-AIDevOps-Testing
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: AWS-AIDevOps-EC2-Profile
+      Roles:
+        - !Ref EC2Role
+
   # EC2 Instance for CPU testing
   TestInstance:
     Type: AWS::EC2::Instance
@@ -45,13 +73,41 @@ Resources:
       InstanceType: t3.micro
       ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
       KeyName: !Ref TestKeyPair
+      IamInstanceProfile: !Ref InstanceProfile
       SecurityGroupIds:
         - !Ref TestSecurityGroup
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
           yum update -y
-          yum install -y htop
+          yum install -y htop amazon-cloudwatch-agent
+
+          # Configure CloudWatch Agent
+          cat > /opt/aws/amazon-cloudwatch-agent/etc/config.json << 'CW_CONFIG'
+          {
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/home/ec2-user/cpu-test.log",
+                      "log_group_name": "/aws/ec2/cpu-stress-test",
+                      "log_stream_name": "{instance_id}",
+                      "timezone": "UTC"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          CW_CONFIG
+
+          # Start CloudWatch Agent
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+            -a fetch-config \
+            -m ec2 \
+            -s \
+            -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json
 
           # Create the CPU stress test script
           cat > /home/ec2-user/cpu-stress-test.sh << 'EOF'
@@ -66,7 +122,7 @@ Resources:
           echo "CPU Cores: $CORES"
           echo ""
 
-          echo "Starting stress test (5 minutes)..."
+          echo "Starting stress test (30 minutes)..."
           echo "This will generate >70% CPU usage to trigger CloudWatch alarm"
           echo ""
 
@@ -79,16 +135,24 @@ Resources:
               echo $CPU_PID >> /tmp/cpu_test_pids
           done
 
-          # Auto-cleanup after 5 minutes
-          (sleep 300 && echo "Stopping CPU load processes..." && kill $(cat /tmp/cpu_test_pids 2>/dev/null) 2>/dev/null && rm -f /tmp/cpu_test_pids) &
+          # Auto-cleanup after 30 minutes
+          (sleep 1800 && echo "Stopping CPU load processes..." && kill $(cat /tmp/cpu_test_pids 2>/dev/null) 2>/dev/null && rm -f /tmp/cpu_test_pids) &
 
           echo ""
-          echo "CPU load processes started for 5 minutes"
+          echo "CPU load processes started for 30 minutes"
           echo "Check CloudWatch for alarm trigger in 3-5 minutes"
           EOF
 
           chmod +x /home/ec2-user/cpu-stress-test.sh
           chown ec2-user:ec2-user /home/ec2-user/cpu-stress-test.sh
+
+          # Create log file with proper permissions
+          touch /home/ec2-user/cpu-test.log
+          chown ec2-user:ec2-user /home/ec2-user/cpu-test.log
+          chmod 644 /home/ec2-user/cpu-test.log
+
+          # Schedule CPU stress test to start in 5 minutes
+          (sleep 300 && sudo -u ec2-user /home/ec2-user/cpu-stress-test.sh) > /home/ec2-user/cpu-test.log 2>&1 &
 
           # Create auto-shutdown script (safety mechanism)
           cat > /home/ec2-user/auto-shutdown.sh << 'SHUTDOWN_EOF'
@@ -103,6 +167,7 @@ Resources:
           nohup /home/ec2-user/auto-shutdown.sh > /home/ec2-user/auto-shutdown.log 2>&1 &
 
           echo "AWS AIDevOps test setup completed at $(date)" > /home/ec2-user/setup-complete.txt
+          echo "CPU stress test will start automatically in 5 minutes" >> /home/ec2-user/setup-complete.txt
       Tags:
         - Key: Name
           Value: AWS-AIDevOps-Test-Instance
@@ -139,6 +204,18 @@ Outputs:
   AlarmName:
     Description: CloudWatch Alarm Name
     Value: !Ref CPUAlarm
+
+  LogGroupName:
+    Description: CloudWatch Logs Group Name
+    Value: /aws/ec2/cpu-stress-test
+
+  KeyPairId:
+    Description: Key Pair ID (use this to retrieve the private key)
+    Value: !GetAtt TestKeyPair.KeyPairId
+
+  DownloadKeyCommand:
+    Description: AWS CLI command to download the SSH private key
+    Value: !Sub 'aws ssm get-parameter --name /ec2/keypair/${TestKeyPair.KeyPairId} --with-decryption --query Parameter.Value --output text > AWS-AIDevOps-test-key.pem && chmod 400 AWS-AIDevOps-test-key.pem'
 
   SSHCommand:
     Description: SSH command to connect to instance
