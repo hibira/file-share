@@ -122,7 +122,7 @@ Resources:
           echo "CPU Cores: $CORES"
           echo ""
 
-          echo "Starting stress test (30 minutes)..."
+          echo "Starting stress test (60 minutes)..."
           echo "This will generate >70% CPU usage to trigger CloudWatch alarm"
           echo ""
 
@@ -136,10 +136,10 @@ Resources:
           done
 
           # Auto-cleanup after 30 minutes
-          (sleep 1800 && echo "Stopping CPU load processes..." && kill $(cat /tmp/cpu_test_pids 2>/dev/null) 2>/dev/null && rm -f /tmp/cpu_test_pids) &
+          (sleep 3600 && echo "Stopping CPU load processes..." && kill $(cat /tmp/cpu_test_pids 2>/dev/null) 2>/dev/null && rm -f /tmp/cpu_test_pids) &
 
           echo ""
-          echo "CPU load processes started for 30 minutes"
+          echo "CPU load processes started for 60 minutes"
           echo "Check CloudWatch for alarm trigger in 3-5 minutes"
           EOF
 
@@ -151,8 +151,8 @@ Resources:
           chown ec2-user:ec2-user /home/ec2-user/cpu-test.log
           chmod 644 /home/ec2-user/cpu-test.log
 
-          # Schedule CPU stress test to start in 5 minutes
-          (sleep 300 && sudo -u ec2-user /home/ec2-user/cpu-stress-test.sh) > /home/ec2-user/cpu-test.log 2>&1 &
+          # Schedule CPU stress test to start
+          (sudo -u ec2-user /home/ec2-user/cpu-stress-test.sh) > /home/ec2-user/cpu-test.log 2>&1 &
 
           # Create auto-shutdown script (safety mechanism)
           cat > /home/ec2-user/auto-shutdown.sh << 'SHUTDOWN_EOF'
